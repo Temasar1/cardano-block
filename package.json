@@ -1,23 +1,59 @@
 {
-  "name": "fluffy-guacamole",
+  "name": "cardano-devnet",
   "version": "1.0.0",
-  "description": "",
+  "description": "Production-grade Cardano devnet — real ledger rules, simulated block production, default network magic 42",
+  "type": "module",
   "main": "dist/index.js",
-  "scripts": {
-    "build": "tsc",
-    "dev": "tsx src/index.ts",
-    "start": "node dist/index.js",
-    "clean": "rm -rf dist"
+  "bin": {
+    "cardano-devnet": "dist/index.js"
   },
-  "keywords": [],
-  "author": "",
+  "exports": {
+    ".": "./dist/index.js",
+    "./provider": "./dist/provider.js",
+    "./tx-builder": "./dist/tx-builder.js",
+    "./types": "./dist/types.js",
+    "./config": "./dist/config.js"
+  },
+  "scripts": {
+    "build":     "tsc",
+    "dev":       "node --no-warnings --loader ts-node/esm src/index.ts start",
+    "selftest":  "node --no-warnings --loader ts-node/esm src/index.ts selftest",
+    "start":     "node dist/index.js start",
+    "wallets":   "node dist/index.js wallets",
+    "tip":       "node dist/index.js tip",
+    "clean":     "rm -rf dist",
+    "rebuild":   "npm run clean && npm run build",
+    "prepare":   "npm run build"
+  },
+  "keywords": [
+    "cardano",
+    "devnet",
+    "blockchain"
+  ],
+  "author": "Emmanuel .A",
   "license": "ISC",
   "devDependencies": {
+    "@types/express": "^5.0.6",
     "@types/node": "^20.10.0",
-    "tsx": "^4.19.3",
+    "ts-node": "^10.9.2",
     "typescript": "^5.3.3"
   },
   "dependencies": {
-    "@meshsdk/core": "^1.9.0-beta.97"
+    "@harmoniclabs/bip32_ed25519": "^0.1.3",
+    "@harmoniclabs/cardano-costmodels-ts": "^1.4.0",
+    "@harmoniclabs/cardano-ledger-ts": "^0.5.1",
+    "@harmoniclabs/cbor": "^2.0.1",
+    "@harmoniclabs/pair": "^1.0.0",
+    "@harmoniclabs/plutus-data": "^2.0.1",
+    "@harmoniclabs/plutus-machine": "^3.0.2",
+    "@harmoniclabs/uplc": "^2.0.6",
+    "@meshsdk/core": "^1.9.0-beta.97",
+    "@noble/ed25519": "^3.1.0",
+    "@noble/hashes": "^2.2.0",
+    "bech32": "^2.0.0",
+    "cbor": "^8.1.0",
+    "chalk": "^5.6.2",
+    "commander": "^14.0.3",
+    "express": "^5.2.1"
   }
 }
