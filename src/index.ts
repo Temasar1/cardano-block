@@ -19,7 +19,7 @@ import { Command }               from 'commander';
 import chalk                     from 'chalk';
 import { PROTOCOL_PARAMS, NETWORK_MAGIC, NETWORK_ID, ProtocolParams } from './config.js';
 import { LedgerState }           from './ledger/state.js';
-import { TransactionValidator }  from './ledger/validator.js';
+import { TransactionValidator, setGenesisTime } from './ledger/validator.js';
 import { Mempool }               from './mempool.js';
 import { BlockProducer }         from './producer.js';
 import { buildGenesisWallets, applyGenesis } from './genesis.js';
@@ -59,6 +59,11 @@ program
     const port     = Number(opts.port);
     const state    = new LedgerState();
     const mempool  = new Mempool();
+
+    // One clock origin for slot numbering and Plutus POSIXTimeRange — must match Mesh TTL.
+    const chainStartMs = Date.now();
+    setGenesisTime(chainStartMs);
+
     const validator = new TransactionValidator(state, params);
 
     const wallets = buildGenesisWallets();
@@ -74,7 +79,7 @@ program
       );
     });
 
-    producer.start();
+    producer.start(chainStartMs);
     startServer({ state, mempool, validator, params, wallets, port });
     printBanner(params, wallets, port);
 

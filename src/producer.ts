@@ -34,8 +34,12 @@ export class BlockProducer {
     private readonly onBlock?: (block: Block) => void,
   ) {}
 
-  start(): void {
-    this.startTime = Date.now();
+  /**
+   * @param slotZeroMs  Same value passed to `setGenesisTime` — wall time at which
+   *                    slot 0 is defined (POSIX = slotZeroMs + slot * slotLengthMs).
+   */
+  start(slotZeroMs: number = Date.now()): void {
+    this.startTime = slotZeroMs;
     this.timer     = setInterval(() => this.tick(), this.params.slotLengthMs);
   }
 

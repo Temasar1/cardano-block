@@ -19,6 +19,7 @@ import {
 
 import { derivePublicKey, paymentKeyHash, toHex, fromHex } from './crypto.js';
 import type { GenesisWallet, UTxO } from './types.js';
+import { valueToMeshAssets } from './types.js';
 import type { LedgerState } from './ledger/state.js';
 import { NETWORK_ID } from './config.js';
 
@@ -85,11 +86,12 @@ export function applyGenesis(state: LedgerState, wallets: GenesisWallet[]): void
     // 32 bytes filled with wallet index = deterministic valid 64-char hex tx hash
     const txHash = Buffer.alloc(32, i).toString('hex');
     const utxo: UTxO = {
-      input:  { txHash, index: 0 },
+      input:  { txHash, outputIndex: 0 },
       output: {
-        addressHex:    w.addressHex,
-        addressBech32: w.addressBech32,
-        value:         { lovelace: w.initialLovelace },
+        address:    w.addressBech32,
+        amount:     valueToMeshAssets({ lovelace: w.initialLovelace }),
+        addressHex: w.addressHex,
+        value:      { lovelace: w.initialLovelace },
       },
     };
     state.addUTxO(utxo);
@@ -97,6 +99,6 @@ export function applyGenesis(state: LedgerState, wallets: GenesisWallet[]): void
 }
 
 /** Return the genesis UTxO reference for wallet i — useful in tests/scripts. */
-export function genesisUTxORef(i: number): { txHash: string; index: number } {
-  return { txHash: Buffer.alloc(32, i).toString('hex'), index: 0 };
+export function genesisUTxORef(i: number): { txHash: string; outputIndex: number } {
+  return { txHash: Buffer.alloc(32, i).toString('hex'), outputIndex: 0 };
 }

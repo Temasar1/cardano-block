@@ -24,15 +24,19 @@
  *   GET  /health                        liveness probe
  */
 
-import express, { Request, Response } from 'express';
-import { bech32 }                      from 'bech32';
-import type { LedgerState }            from '../ledger/state.js';
-import type { Mempool }                from '../mempool.js';
-import type { TransactionValidator }   from '../ledger/validator.js';
-import type { ProtocolParams }         from '../config.js';
+import http                             from 'http';
+import { WebSocketServer, WebSocket }   from 'ws';
+import express, { Request, Response }   from 'express';
+import { bech32 }                       from 'bech32';
+import type { LedgerState }             from '../ledger/state.js';
+import type { Mempool }                 from '../mempool.js';
+import type { TransactionValidator }    from '../ledger/validator.js';
+import type { ProtocolParams }          from '../config.js';
 import type { GenesisWallet, UTxO, Value, Block, Transaction } from '../types.js';
-import { NETWORK_MAGIC, NETWORK_ID }   from '../config.js';
-import { blake2b256, toHex }           from '../crypto.js';
+import { valueToMeshAssets }            from '../types.js';
+import { NETWORK_MAGIC, NETWORK_ID }    from '../config.js';
+import { blake2b256, toHex }            from '../crypto.js';
+import { DevnetEvaluator }              from '../ledger/evaluator.js';
 
 export interface ServerOptions {
   state:     LedgerState;
@@ -43,9 +47,10 @@ export interface ServerOptions {
   port:      number;
 }
 
-export function startServer(opts: ServerOptions): void {
+export function startServer(opts: ServerOptions): http.Server {
   const { state, mempool, validator, params, wallets, port } = opts;
-  const app = express();
+  const evaluator = new DevnetEvaluator(state, params);
+  const app       = express();
 
   app.use(express.raw({ type: ['application/cbor', 'application/octet-stream'], limit: '2mb' }));
   app.use(express.json({ limit: '2mb' }));
@@ -101,7 +106,7 @@ export function startServer(opts: ServerOptions): void {
   // ── Single UTxO (Mesh fetchUTxOs(hash, idx)) ────────────────────────────
   app.get('/utxo/:txHash/:idx', (req, res) => {
     const idx = Number(req.params.idx);
-    const u   = state.getUTxO({ txHash: req.params.txHash, index: idx });
+    const u   = state.getUTxO({ txHash: req.params.txHash, outputIndex: idx });
     if (!u) return void res.status(404).json({ error: 'UTxO not found' });
     res.json(serializeUTxO(u));
   });
@@ -119,14 +124,14 @@ export function startServer(opts: ServerOptions): void {
     if (!tx) return void res.status(404).json({ error: 'Transaction not found' });
     res.json({
       hash:    tx.hash,
-      inputs:  tx.body.inputs.map(i => ({ txHash: i.txHash, outputIndex: i.index })),
+      inputs:  tx.body.inputs.map(i => ({ txHash: i.txHash, outputIndex: i.outputIndex })),
       outputs: tx.body.outputs.map((o, idx) => ({
         outputIndex: idx,
-        address:     o.addressBech32,
+        address:     o.address,
         amount:      serializeValue(o.value),
-        dataHash:    o.datumHash   ?? null,
-        plutusData:  o.inlineDatum ?? null,
-        scriptRef:   o.scriptRef   ?? null,
+        dataHash:    o.dataHash   ?? null,
+        plutusData:  o.plutusData ?? null,
+        scriptRef:   o.scriptRef  ?? null,
       })),
     });
   });
@@ -140,10 +145,10 @@ export function startServer(opts: ServerOptions): void {
         const tx = state.getTx(h);
         if (!tx) continue;
         const touchesAddress =
-          tx.body.outputs.some(o => o.addressBech32 === addr || o.addressHex === addr) ||
+          tx.body.outputs.some(o => o.address === addr || o.addressHex === addr) ||
           tx.body.inputs.some(i => {
             const u = state.getUTxO(i);
-            return !!u && (u.output.addressBech32 === addr || u.output.addressHex === addr);
+            return !!u && (u.output.address === addr || u.output.addressHex === addr);
           });
         if (touchesAddress) txs.push(serializeTx(tx, blk, state));
       }
@@ -251,11 +256,12 @@ export function startServer(opts: ServerOptions): void {
       const txHash = toHex(blake2b256(Buffer.from(seed)));
 
       state.addUTxO({
-        input:  { txHash, index: 0 },
+        input:  { txHash, outputIndex: 0 },
         output: {
+          address,
+          amount:     valueToMeshAssets({ lovelace: amount }),
           addressHex,
-          addressBech32: address,
-          value: { lovelace: amount },
+          value:      { lovelace: amount },
         },
       });
 
@@ -265,7 +271,45 @@ export function startServer(opts: ServerOptions): void {
     }
   });
 
-  app.listen(port);
+  // ── Evaluate (IEvaluator.evaluateTx) ───────────────────────────────────
+  app.post('/evaluate', async (req: Request, res: Response) => {
+    try {
+      const body = req.body;
+      const cbor: string | undefined =
+        typeof body === 'string' ? body.trim() :
+        Buffer.isBuffer(body)    ? Buffer.from(body).toString('hex') :
+        body?.cbor;
+
+      if (!cbor) return void res.status(400).json({ error: 'Send {cbor:"<hex>"} or raw CBOR' });
+
+      const additionalUTxOs: UTxO[] = Array.isArray(body?.additionalUTxOs)
+        ? (body.additionalUTxOs as UTxO[])
+        : [];
+
+      const estimates = await evaluator.evaluateTx(cbor, additionalUTxOs);
+      res.json(estimates);
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message });
+    }
+  });
+
+  // ── HTTP + WebSocket ────────────────────────────────────────────────────
+  const server = http.createServer(app);
+  const wss    = new WebSocketServer({ server, path: '/ws' });
+
+  const broadcast = (type: string, payload: unknown) => {
+    const msg = JSON.stringify({ type, payload });
+    for (const client of wss.clients) {
+      if (client.readyState === WebSocket.OPEN) client.send(msg);
+    }
+  };
+
+  // Forward ledger events to WebSocket clients
+  state.on('block', (block: Block) => broadcast('block', serializeBlock(block)));
+  state.on('tx',    (tx: Transaction) => broadcast('tx', { hash: tx.hash, slot: tx.slot }));
+
+  server.listen(port);
+  return server;
 }
 
 // ── Serialization ─────────────────────────────────────────────────────────────
@@ -303,13 +347,13 @@ function serializeParams(p: ProtocolParams) {
 
 function serializeUTxO(u: UTxO) {
   return {
-    input:  { txHash: u.input.txHash, outputIndex: u.input.index },
+    input:  { txHash: u.input.txHash, outputIndex: u.input.outputIndex },
     output: {
-      address:    u.output.addressBech32,
+      address:    u.output.address,
       amount:     serializeValue(u.output.value),
-      dataHash:   u.output.datumHash   ?? null,
-      plutusData: u.output.inlineDatum ?? null,
-      scriptRef:  u.output.scriptRef   ?? null,
+      dataHash:   u.output.dataHash   ?? null,
+      plutusData: u.output.plutusData ?? null,
+      scriptRef:  u.output.scriptRef  ?? null,
     },
   };
 }
@@ -348,19 +392,19 @@ function serializeTx(tx: Transaction, blk: Block | undefined, state: LedgerState
   // Resolve inputs to {txHash, outputIndex, address, amount} so Mesh's
   // TransactionInfo.inputs (UTxO[]) round-trips losslessly.
   const inputs = tx.body.inputs.map(i => {
-    const u = state.getUTxO(i) ?? state.getTx(i.txHash)?.body.outputs[i.index];
+    const u = state.getUTxO(i) ?? state.getTx(i.txHash)?.body.outputs[i.outputIndex];
     if (u && 'output' in (u as any)) {
       const utxo = u as UTxO;
       return {
         txHash:      i.txHash,
-        outputIndex: i.index,
+        outputIndex: i.outputIndex,
         output: {
-          address: utxo.output.addressBech32,
+          address: utxo.output.address,
           amount:  serializeValue(utxo.output.value),
         },
       };
     }
-    return { txHash: i.txHash, outputIndex: i.index };
+    return { txHash: i.txHash, outputIndex: i.outputIndex };
   });
 
   return {
@@ -380,10 +424,10 @@ function serializeTx(tx: Transaction, blk: Block | undefined, state: LedgerState
     inputs,
     outputs: tx.body.outputs.map((o, i) => ({
       index:      i,
-      address:    o.addressBech32,
+      address:    o.address,
       amount:     serializeValue(o.value),
-      dataHash:   o.datumHash   ?? null,
-      plutusData: o.inlineDatum ?? null,
+      dataHash:   o.dataHash   ?? null,
+      plutusData: o.plutusData ?? null,
     })),
   };
 }

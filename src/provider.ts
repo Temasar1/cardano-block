@@ -47,6 +47,10 @@ import type {
   GovernanceProposalInfo,
 } from '@meshsdk/common';
 
+type RedeemerTagType = 'CERT' | 'MINT' | 'REWARD' | 'SPEND' | 'VOTE' | 'PROPOSE';
+type Budget = { mem: number; steps: number };
+type Action = { data: unknown; index: number; budget: Budget; tag: RedeemerTagType };
+
 export class DevnetProvider implements IFetcher, ISubmitter, IListener {
   private readonly base: string;
 
@@ -167,6 +171,39 @@ export class DevnetProvider implements IFetcher, ISubmitter, IListener {
   async get(url: string): Promise<any> {
     const target = url.startsWith('http') ? url : `${this.base}${url.startsWith('/') ? '' : '/'}${url}`;
     return this.getJson(target);
+  }
+
+  // ── IEvaluator ────────────────────────────────────────────────────────────
+
+  /**
+   * Evaluate a transaction and return estimated ExUnits for each script redeemer.
+   * Proxies to the devnet's /evaluate endpoint, which runs the CEK machine with
+   * an unbounded budget and returns actual costs.
+   */
+  async evaluateTx(
+    tx:               string,
+    additionalUtxos:  UTxO[]   = [],
+    _additionalTxs:   string[] = [],
+  ): Promise<Omit<Action, 'data'>[]> {
+    const res = await fetch(`${this.base}/evaluate`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ cbor: tx, additionalUTxOs: additionalUtxos }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(`DevnetProvider evaluateTx: ${(body as any).error ?? res.statusText}`);
+    }
+    const data = (await res.json()) as Array<{
+      tag:    string;
+      index:  number;
+      budget: { mem: number; steps: number };
+    }>;
+    return data.map(d => ({
+      tag:    d.tag as any,
+      index:  d.index,
+      budget: { mem: d.budget.mem, steps: d.budget.steps },
+    }));
   }
 
   // ── IListener ─────────────────────────────────────────────────────────────

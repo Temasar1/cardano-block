@@ -16,9 +16,10 @@ transaction, validate it against Conway-era ledger rules and watch it
 land in a block.
 
 > **Status:** works end-to-end for **basic ADA / native-asset UTxO
-> transactions**. Plutus, native scripts, certificates, withdrawals
-> and governance are *not* implemented yet — see [Roadmap](#roadmap)
-> for the honest list.
+> transactions and Plutus V1/V2/V3 smart-contract transactions
+> (spending + minting scripts, collateral validation, ExUnit budget
+> enforcement)**. Certificates, withdrawals and governance are *not*
+> implemented yet — see [Roadmap](#roadmap) for the honest list.
 
 ---
 
@@ -304,7 +305,7 @@ cardano-block/
 │  ├─ index.ts             # CLI entry point + banner
 │  ├─ config.ts            # Conway params + network identity
 │  ├─ crypto.ts            # blake2b + Ed25519
-│  ├─ types.ts             # internal Tx/UTxO/Block types
+│  ├─ types.ts             # internal Tx/UTxO/Block/Witness types
 │  ├─ genesis.ts           # 5 pre-funded test wallets
 │  ├─ mempool.ts           # in-memory mempool
 │  ├─ producer.ts          # slot-tick block producer
@@ -312,28 +313,40 @@ cardano-block/
 │  ├─ tx-builder.ts        # meshFromGenesisSeed() helper
 │  ├─ ledger/
 │  │  ├─ state.ts          # UTxO Map + chain history
-│  │  └─ validator.ts      # UTXO/UTXOW/LEDGER rule set
+│  │  ├─ validator.ts      # UTXO/UTXOW/LEDGER/UTXOS rule set
+│  │  ├─ script-context.ts # PlutusData ScriptContext builder (V2 + V3)
+│  │  ├─ plutus-eval.ts    # CEK machine wrapper (Machine.eval)
+│  │  └─ native-script.ts  # Native script evaluation (timelock / multisig)
 │  └─ api/
 │     └─ server.ts         # Express HTTP routes
+├─ tests/
+│  ├─ validator.test.ts    # UTXO/UTXOW/LEDGER rule unit tests
+│  ├─ script-context.test.ts # PlutusData encoding tests
+│  └─ plutus-eval.test.ts  # CEK machine evaluation tests
 ├─ dist/                   # tsc output (gitignored)
+├─ vitest.config.ts
 ├─ tsconfig.json
 ├─ package.json
 └─ README.md
 ```
 
-Source is **~1 600 LOC of TypeScript total**. That's deliberate.
+Source is **~2 400 LOC of TypeScript** (src) + **~500 LOC of tests**.
 
 ---
 
 ## Build, dev, test scripts
 
-The runtime is **`ts-node`** (ESM mode); the build tool is **`tsc`**.
+The runtime is **`ts-node`** (ESM mode); the build tool is **`tsc`**; the test
+runner is **`vitest`**.
 
 | Script | What it does |
 |---|---|
 | `npm run build` | `tsc` → emits `dist/*.js` + `.d.ts` + source maps |
 | `npm run dev` | `node --loader ts-node/esm src/index.ts start` — runs straight from TypeScript, no precompile |
 | `npm start` | `node dist/index.js start` — runs the compiled output (use this in production) |
+| `npm test` | `vitest run` — runs all unit tests once (validator, ScriptContext, CEK eval) |
+| `npm run test:watch` | `vitest` — watch mode, re-runs on save |
+| `npm run e2e` | end-to-end smoke test via `MeshTxBuilder` against a running devnet |
 | `npm run selftest` | runs the `selftest` command via ts-node against a running devnet |
 | `npm run wallets` | lists the genesis wallets from a running devnet |
 | `npm run tip` | dumps the chain tip |
@@ -395,6 +408,24 @@ Be honest about what's actually working.
 - [x] Genesis wallets exposed in CIP-5 `payment.skey` envelope (`5820<seed>`) → drop straight into `MeshWallet({ key: { type: 'cli', payment } })`
 - [x] `meshFromGenesisSeed()` helper → `{ wallet, builder }` in one call
 - [x] `cardano-devnet selftest` command builds + signs + submits + confirms a real CBOR tx through `MeshTxBuilder`
+- [x] **UTXOS rule set** (Plutus + native script execution — Conway/Babbage):
+  - [x] S1 collateral inputs present and cover `collateralPercent`% of fee
+  - [x] S2 collateral inputs are all key-locked (not script-locked)
+  - [x] S3 spending scripts: script resolved from witness set or reference input, datum resolved from inline / witness datums, **CEK machine evaluation** via `@harmoniclabs/plutus-machine`
+  - [x] S4 minting scripts: policy id resolved, redeemer matched by sorted policy index, CEK evaluation
+  - [x] S5 native scripts: full `sig / all / any / atLeast / after / before` timelock support
+  - [x] S6 cumulative ExUnits ≤ `maxTxExMem` / `maxTxExSteps`
+- [x] **PlutusData ScriptContext builder** (`src/ledger/script-context.ts`):
+  - [x] V2 `ScriptContext = Constr 0 [TxInfo(12 fields), ScriptPurpose]` — full `makeIsDataIndexed` encoding
+  - [x] V3 `ScriptContext = Constr 0 [TxInfo(16 fields), Redeemer, ScriptInfo]` — bare `Lovelace` fee, `MintValue`, governance placeholders
+  - [x] Address encoding for all Shelley address types (enterprise/base/pointer, key/script payment, key/script staking)
+  - [x] `POSIXTimeRange` with NegInf/Finite/PosInf bounds
+  - [x] Datum resolution (inline → decode CBOR; hash → witness-set lookup)
+  - [x] Reference-input scripts surfaced from UTxO set via `scriptRefHash` / `scriptRefVersion` on `TxOutput`
+- [x] **Vitest test suite** (`npm test`, 40 tests, all green):
+  - [x] `tests/validator.test.ts` — U1–U10, W1–W3, N2, minFee scaling
+  - [x] `tests/script-context.test.ts` — address encoding, POSIXTimeRange, datum hash round-trip, V2/V3 field counts, fee-type difference
+  - [x] `tests/plutus-eval.test.ts` — result shape, budget zeroing, always-succeeds script evaluation
 
 ### 🟡 Partial / approximate
 
@@ -407,23 +438,20 @@ Be honest about what's actually working.
 
 ### ❌ Not implemented
 
-- [ ] **Plutus scripts (V1/V2/V3) execution + cost-model evaluation** — `@harmoniclabs/plutus-machine` is already in `package.json`, just needs wiring under a new `UTXOS` rule path.
-- [ ] **`IEvaluator.evaluateTx`** for the `DevnetProvider` (depends on Plutus eval above)
-- [ ] **Native scripts** (Allegra timelocks, Mary multi-sig) — would let basic Mesh dApps that mint with `simple_script` policies work.
+- [ ] **`IEvaluator.evaluateTx`** for the `DevnetProvider` — `estimatePlutusExUnits` in `plutus-eval.ts` is ready; needs a provider adapter that maps MeshSDK's `Evaluator` interface to our CEK machine.
 - [ ] **Stake delegation** — registering stake keys, delegating to pools. Without this, base addresses (`addr_test1q…`) can't be funded the same way enterprise addresses are.
 - [ ] **Reward calculation** — even a no-op (zero rewards) would make `wallet.getRewardAddresses()` non-empty.
 - [ ] **Stake-pool registration / retirement**
 - [ ] **Withdrawals** (`tx_body.withdrawals`)
 - [ ] **Certificates** (`stake_registration`, `pool_registration`, etc.) — the field is parsed and discarded.
 - [ ] **Conway governance** — DReps, votes, proposals, treasury withdrawals. `IFetcher.fetchGovernanceProposal` currently throws.
-- [ ] **Reference inputs validation** — the field is parsed but we don't check the referenced UTxOs exist.
-- [ ] **Collateral validation** — parsed, never checked. Moot today because we reject all script txs anyway.
+- [ ] **Reference inputs existence check** — the field is parsed; UTxO existence is not enforced during basic (non-script) tx validation.
 - [ ] **Auxiliary-data hash check** — body's `aux_data_hash` is not verified against the actual aux-data bytes. Real Conway `validateMetadata` requires this.
 - [ ] **Persistent storage** — restart wipes the chain. (`yaci-devkit` uses H2; `cardano-node` uses LMDB.) In-memory is fine for testing, painful for long-running scenarios.
 - [ ] **Real Ouroboros consensus** — we're a single producer with no slot leader VRF, no chain-selection, no roll-back. Acceptable for a devnet.
 - [ ] **CIP-30 wallet bridge** — no WebSocket / message-port bridge so `BrowserWallet.enable('Lace')` can talk to us directly. (Workaround: dApp talks to `DevnetProvider` directly via fetch.)
 - [ ] **Chainsync / blockfetch over the Ouroboros mini-protocol** — would let `pallas`-based tooling, `cardano-db-sync` and Ogmios index the devnet like any real peer.
-- [ ] **Deterministic test fixtures (regression CBOR vectors)** — currently the only test is `selftest`. Should add fixed-input CBOR fixtures + expected validation outcomes.
+- [ ] **V3 `ScriptInfo.SpendingScript` datum field** — currently always encoded as `Nothing`; for full V3 correctness the resolved datum should be embedded in `ScriptInfo` rather than passed separately.
 
 ---
 
@@ -433,11 +461,12 @@ Be honest about what's actually working.
 > means in practice.
 
 1. **"Conway-era ledger" is a partial truth.** We implement the
-   `UTXO`, `UTXOW` and a sliver of `LEDGER` rules. We do not implement
-   `UTXOS` (script execution), `DELPL` (delegation), `POOL`,
+   `UTXO`, `UTXOW`, a sliver of `LEDGER`, and the Plutus/native-script
+   `UTXOS` rule (spending + minting scripts, collateral, ExUnit budget).
+   We do not implement `DELPL` (delegation), `POOL`,
    `RATIFY`/`ENACT`/`TALLY` (governance), `EPOCH`, or `RUPD` (reward
-   updates). For ADA-only and native-asset-only UTxO transfers,
-   that's enough; for anything else, it isn't.
+   updates). For ADA-only, native-asset and smart-contract UTxO
+   transfers, that's enough; for governance or staking, it isn't.
 
 2. **The CBOR parser has a known bug we work around.**
    `@harmoniclabs/cardano-ledger-ts`'s Conway `AuxiliaryData` decoder
@@ -485,9 +514,11 @@ Be honest about what's actually working.
    chain reorg or rollback. Code that depends on rollback semantics
    (e.g. `cardano-db-sync`-style indexers) won't be exercised.
 
-9. **No structured tests yet.** `cardano-devnet selftest` exercises
-   the happy path end-to-end; everything else is uncovered. Adding a
-   `vitest` suite with fixed CBOR vectors is on the roadmap.
+9. **Test coverage is unit-level only.** `npm test` runs 40 unit
+   tests covering ledger rules, PlutusData encoding, and CEK machine
+   invocation. Integration tests with real Plutus contracts compiled
+   by Aiken or PlutusTx are not yet included — you should cross-check
+   your contract against a real testnet for full confidence.
 
 If any of those numbers makes the difference between "this is useful
 to me" and "this isn't", file an issue — most of them are small,
@@ -503,7 +534,7 @@ self-contained changes.
 | [`IntersectMBO/cardano-node`](https://github.com/IntersectMBO/cardano-node) | Reference for protocol-parameter shape and slot/epoch semantics |
 | [`txpipe/pallas`](https://github.com/txpipe/pallas) | Cross-reference for CBOR encoding edge cases |
 | [`HarmonicLabs/cardano-ledger-ts`](https://github.com/HarmonicLabs/cardano-ledger-ts) | TypeScript ledger types — used for parsing & address construction |
-| [`HarmonicLabs/plutus-machine`](https://github.com/HarmonicLabs/plutus-machine) | Will host Plutus evaluation when we wire it in |
+| [`HarmonicLabs/plutus-machine`](https://github.com/HarmonicLabs/plutus-machine) | CEK machine for Plutus V1/V2/V3 evaluation — wired in via `src/ledger/plutus-eval.ts` |
 | [`MeshJS`](https://github.com/MeshJS/mesh) | Wallet + transaction builder we plug into |
 | [`bloxbean/yaci-devkit`](https://github.com/bloxbean/yaci-devkit) | Design inspiration — same job, JVM-based |
 | [`input-output-hk/cardano-js-sdk`](https://github.com/input-output-hk/cardano-js-sdk) | TS SDK reference; we don't depend on it |

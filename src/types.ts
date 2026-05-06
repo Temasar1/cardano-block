@@ -1,19 +1,57 @@
 /**
- * Internal devnet types.
+ * Devnet ledger-facing types anchored on @meshsdk/common so tooling matches Mesh.
  *
- * We keep our own types (rather than re-exporting cardano-ledger-ts directly)
- * so the API server, block producer and CLI can stay decoupled from the
- * parsing library.  The ledger state stores UTxOs in this canonical form;
- * the validator converts cardano-ledger-ts objects to these on entry.
+ * - `MeshTxBuilderBody` is the canonical **builder-phase** TX body (`meshTxBuilderBody`).
+ * - After CBOR decode we keep a **narrow validated body** (`TransactionBody`)
+ *   with bigint fee + internal value split; inputs/outputs use Mesh `TxInput` /
+ *   ledger-extended `TxOutput`.
  */
 
-export type TxHash   = string; // 64-char hex  (32 bytes blake2b-256)
+import type {
+  Asset,
+  MeshTxBuilderBody,
+  TxInput as MeshTxInput,
+  TxOutput as MeshTxOutput,
+  UTxO as MeshUtxoShape,
+} from '@meshsdk/common';
+
+// ── Re-exports aligned with Mesh SDK ──────────────────────────────────────────
+
+/** Mesh TxBuilder canonical body (`MeshTxBuilder.meshTxBuilderBody`). */
+export type MeshTransactionBody = MeshTxBuilderBody;
+export type { MeshTxBuilderBody };
+
+/** Conway / Cardano TxIn reference `{ txHash, outputIndex }` — IFetcher UT xo shape */
+export type TxInput = MeshTxInput;
+
+/** Mesh output row plus fields required by ledger validators & Plutus encoding. */
+export type TxOutput = MeshTxOutput & {
+  /** Raw Shelley address bytes, lowercase hex (29–57 B) — not in Mesh TxOutput */
+  addressHex: string;
+  /** Bigint-valued ADA + mints for preservation / min-Ada logic */
+  value: Value;
+  /** Language of an on-chain reference script (ledger bookkeeping; Mesh only exposes `scriptHash`). */
+  scriptRefVersion?: 1 | 2 | 3 | 'native';
+};
+
+export type UTxO = Omit<MeshUtxoShape, 'input' | 'output'> & {
+  input:  TxInput;
+  output: TxOutput;
+};
+
+// ── Ledger-only (bigint math, PolicyId maps) ─────────────────────────────────
+
+export type TxHash   = string;
 export type Slot     = number;
 export type Lovelace = bigint;
-export type PolicyId = string; // 56-char hex  (28 bytes)
-export type AssetName = string; // hex-encoded asset name bytes
 
-// policyId → assetName → quantity
+/** Hex policy id prefix in unit strings — 56 hex chars (= 28-byte script hash). */
+export type PolicyId = string;
+
+/** Hex-encoded asset name bytes (suffix of Mesh `Asset.unit`). */
+export type AssetName = string;
+
+// policyId → assetName(hex) → quantity
 export type MultiAsset = Record<PolicyId, Record<AssetName, Lovelace>>;
 
 export interface Value {
@@ -21,91 +59,92 @@ export interface Value {
   assets?: MultiAsset;
 }
 
-export interface TxInput {
-  txHash: TxHash;
-  index:  number;
+/** Map `ledger Value` ↔ Mesh `Asset[]` for populating TxOutput.amount */
+export function valueToMeshAssets(value: Value): Asset[] {
+  const out: Asset[] = [{ unit: 'lovelace', quantity: value.lovelace.toString() }];
+  if (!value.assets) return out;
+  for (const pid of Object.keys(value.assets).sort()) {
+    const xs = value.assets[pid];
+    if (!xs) continue;
+    for (const name of Object.keys(xs).sort()) {
+      const q = xs[name];
+      if (q !== undefined && q !== 0n) {
+        out.push({ unit: pid + name, quantity: q.toString() });
+      }
+    }
+  }
+  return out;
 }
 
-export interface TxOutput {
-  /** Raw address bytes as lowercase hex (29–57 bytes) */
-  addressHex:    string;
-  /** Bech32 rendering for display / API responses */
-  addressBech32: string;
-  value:         Value;
-  datumHash?:    string; // 64-char hex
-  inlineDatum?:  string; // CBOR hex of inline datum
-  scriptRef?:    string; // CBOR hex of reference script
-}
-
-export interface UTxO {
-  input:  TxInput;
-  output: TxOutput;
-}
-
+/** Validated body after Conway CBOR decode — not interchangeable with MeshTxBuilderBody. */
 export interface TransactionBody {
-  inputs:          TxInput[];
-  referenceInputs: TxInput[];
-  outputs:         TxOutput[];
-  fee:             Lovelace;
-  ttl?:            Slot;
-  validityStart?:  Slot;
-  mint?:           MultiAsset;
-  networkId?:      number;
-  /** blake2b-224 payment-key-hashes the body declares must sign the tx. */
+  inputs:           TxInput[];
+  referenceInputs:  TxInput[];
+  outputs:          TxOutput[];
+  fee:              Lovelace;
+  ttl?:             Slot;
+  validityStart?:   Slot;
+  mint?:            MultiAsset;
+  networkId?:       number;
+  /** Required payment key hashes — hex ; Mesh uses `requiredSignatures` same semantics */
   requiredSigners?: string[];
-  /** blake2b-256 of the auxiliary data (metadata) — needed for U6/W4. */
-  auxDataHash?:    string;
-  /** Collateral inputs (only relevant for script txs). */
+  auxDataHash?:     string;
   collateralInputs?: TxInput[];
 }
 
 export interface VKeyWitness {
-  /** 32-byte Ed25519 public key, hex */
   vkey:      string;
-  /** 64-byte signature, hex */
   signature: string;
+}
+
+export interface TxRedeemerInfo {
+  tag:       'spend' | 'mint' | 'cert' | 'withdraw' | 'vote' | 'propose';
+  index:     number;
+  dataHex:   string;
+  exUnits:   { cpu: bigint; mem: bigint };
+}
+
+export interface TxScriptInfo {
+  version:  1 | 2 | 3 | 'native';
+  bytesHex: string;
+}
+
+export interface TxWitnesses {
+  vkeyWitnesses: VKeyWitness[];
+  datums:        Record<string, string>;
+  redeemers:     TxRedeemerInfo[];
+  scripts:       Record<string, TxScriptInfo>;
 }
 
 export interface Transaction {
   hash:      TxHash;
   body:      TransactionBody;
-  witnesses: { vkeyWitnesses: VKeyWitness[] };
+  witnesses: TxWitnesses;
   isValid:   boolean;
   slot:      Slot;
 }
 
 export interface Block {
-  hash:        string;
-  height:      number;
-  slot:        Slot;
-  epoch:       number;
-  epochSlot:   number;
-  time:        number; // unix seconds
-  txCount:     number;
-  txHashes:    TxHash[];
+  hash:         string;
+  height:       number;
+  slot:         Slot;
+  epoch:        number;
+  epochSlot:    number;
+  time:         number;
+  txCount:      number;
+  txHashes:     TxHash[];
   previousHash: string;
-  /** blake2b-256 over the concatenated tx body hashes (transaction merkle root). */
-  bodyHash:    string;
-  /** Σ fee for all txs in the block. */
+  bodyHash:     string;
   feesCollected: Lovelace;
 }
 
-// ── Genesis ───────────────────────────────────────────────────────────────────
-
 export interface GenesisWallet {
-  index:          number;
-  /** 32-byte Ed25519 private key seed — hex (test use only) */
-  privateKeyHex:  string;
-  /**
-   * Mesh-compatible CLI envelope: "5820" + privateKeyHex.
-   * Pass this to `MeshWallet({ key: { type: 'cli', payment: <here> } })`.
-   */
+  index:           number;
+  privateKeyHex:   string;
   privateKeyCliHex: string;
-  /** 32-byte Ed25519 public key — hex */
-  publicKeyHex:   string;
-  /** blake2b-224(publicKey) — hex (28 bytes = 56 chars) */
-  paymentKeyHash: string;
-  addressBech32:  string;
-  addressHex:     string;
+  publicKeyHex:    string;
+  paymentKeyHash:  string;
+  addressBech32:   string;
+  addressHex:      string;
   initialLovelace: Lovelace;
 }
