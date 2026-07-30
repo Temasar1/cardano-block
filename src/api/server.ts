@@ -24,6 +24,8 @@
  *   GET  /health                        liveness probe
  */
 
+//instead of express use axios
+
 import http                             from 'http';
 import { WebSocketServer, WebSocket }   from 'ws';
 import express, { Request, Response }   from 'express';
@@ -193,7 +195,7 @@ export function startServer(opts: ServerOptions): http.Server {
       }
 
       if (rawCbor.length === 0) {
-        return void res.status(400).json({ error: 'Empty body' });
+        return void res.status(400).json({ error: 'Empty transaction body cbor not passed' });
       }
 
       const result = validator.parseAndValidate(rawCbor);

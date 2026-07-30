@@ -56,9 +56,9 @@ export class DevnetProvider implements IFetcher, ISubmitter, IListener {
 
   /**
    * @param baseUrl  URL of the running cardano-devnet process.
-   *                 Default: http://localhost:3000
+   *                 Default: http://localhost:4000
    */
-  constructor(baseUrl = 'http://localhost:3000') {
+  constructor(baseUrl = 'http://localhost:4000') {
     this.base = baseUrl.replace(/\/$/, '');
   }
 

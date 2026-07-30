@@ -40,7 +40,7 @@ program
 program
   .command('start', { isDefault: true })
   .description('Start the devnet node + HTTP API')
-  .option('-p, --port <number>',         'HTTP API port',            '3000')
+  .option('-p, --port <number>',         'HTTP API port',            '4000')
   .option('--slot-length <ms>',           'Slot length in ms',        '1000')
   .option('--epoch-length <slots>',       'Slots per epoch',          '100')
   .option('--min-fee-a <n>',              'minFeeA lovelace/byte',    '44')

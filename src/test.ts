@@ -2,7 +2,7 @@ import { MeshTxBuilder, MeshWallet } from '@meshsdk/core';
 import { DevnetProvider }            from 'cardano-devnet/provider';
 
 // 3. Plug DevnetProvider in wherever you'd plug BlockfrostProvider.
-const provider = new DevnetProvider('http://localhost:3000');
+const provider = new DevnetProvider('http://localhost:4000');
 
 // 4. Pull protocol params + the pre-funded genesis wallets straight from the
 //    devnet — no manual JSON files, no faucet sign-up.

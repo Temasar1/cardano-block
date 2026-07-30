@@ -21,7 +21,7 @@ import type { UTxO as MeshUtxo } from '@meshsdk/common';
 
 import { DevnetProvider } from 'cardano-devnet/provider';
 
-const DEVNET_URL = process.env.DEVNET_URL ?? 'http://localhost:3000';
+const DEVNET_URL = process.env.DEVNET_URL ?? 'http://localhost:4000';
 const provider = new DevnetProvider(DEVNET_URL);
 
 async function assertDevnetHealthy(): Promise<void> {
@@ -65,6 +65,7 @@ const tx = new MeshTxBuilder({
 });
 
 const utxos = await wallet.getUtxos('enterprise');
+console.log('utxos',utxos)
 const change = await wallet.getChangeAddress('enterprise');
 
 const adaLovelace = (u: MeshUtxo): bigint =>
